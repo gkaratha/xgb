@@ -1,0 +1,101 @@
+import sys
+import pandas
+import numpy as np
+from sklearn.cross_validation import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from xgboost import XGBClassifier
+# this wrapper makes it possible to train on subset of features
+from rep.estimators import SklearnClassifier
+import root_numpy
+from optparse import OptionParser
+from sklearn.externals import joblib
+from sklearn.utils.class_weight import compute_sample_weight
+import time
+import os
+
+
+def calculate_weights(Ytest,bf=4.4e-7,acc=0.29,reco=0.46,nevts=470e6):
+      #print(Xtest.dtype.names)
+      #print(Ytest)
+      exp_b=nevts*bf*acc*reco
+      print Ytest.shape,Ytest.size,np.count_nonzero(Ytest),exp_b
+      signal_weight=exp_b/np.count_nonzero(Ytest)
+      result_weight=np.array([])
+      for ib in Ytest:
+        result=0
+        if ib==0: result=1 
+        else: result=signal_weight
+#        print "here"
+        result_weight=np.append(result_weight,result)
+      return result_weight
+
+def trainAdaBoost(Xtrain,Xtest,Ytrain,Ytest,clf='adaboost',depth=3,lrate=0.01,nestimators=10,samplefraction=0.8,ncollumns=1.0,reg_g=0.1):
+    print "trainning "+clf
+    
+    if clf in 'adaboost':
+       model='AdaBoost_lRate'+str(lrate)+'_Depth'+str(depth)+'_Ntrees'+str(nestimators)+'_SampFraction'+str(samplefraction)
+    if clf in 'gradboost':
+       model='GradBoost_lRate'+str(lrate)+'_Depth'+str(depth)+'_Ntrees'+str(nestimators)+'_SampFraction'+str(samplefraction)+'_VarFraction'+str(ncollumns)
+    if clf in 'xgboost':
+       model='XGBoost_lRate'+str(lrate)+'_Depth'+str(depth)+'_Ntrees'+str(nestimators)+'_SampFraction'+str(samplefraction)+'_VarFraction'+str(ncollumns)+'_Gamma'+str(reg_g)
+#    if os.path.exists('/afs/cern.ch/work/g/gkaratha/private/SUSYCMG/HLT/efficiency/Analizer/uboost/CMSSW_10_1_4/src/hep_ml/ScikitWeights/'+model+".pkl"):
+ #      print "trained already, weights are there"
+  #     exit()
+    print "Model ",model
+    weightTrain= compute_sample_weight(class_weight='balanced', y=Ytrain) 
+    weightTest= compute_sample_weight(class_weight='balanced', y=Ytest)
+    if clf in 'adaboost':
+       dt=DecisionTreeClassifier(max_depth=depth,max_features=ncollumns)
+       bdt=AdaBoostClassifier(dt,algorithm='SAMME.R',n_estimators=nestimators,learning_rate=lrate)
+    if clf in 'gradboost':
+       bdt=GradientBoostingClassifier(loss='deviance',max_depth=depth,n_estimators=nestimators,learning_rate=lrate,subsample=samplefraction,max_features=ncollumns)
+    if clf in 'xgboost':
+       bdt=XGBClassifier(max_depth=depth,n_estimators=nestimators,learning_rate=lrate,subsample=samplefraction,colsample_bytree=ncollumns,gamma=reg_g)
+    start = time.clock()
+    bdt.fit(Xtrain,Ytrain,sample_weight=weightTrain)
+   
+    elapsed = time.clock()
+    elapsed = elapsed - start
+    print "Time spent is: ", elapsed
+    joblib.dump(bdt,model+'.pkl')
+
+
+
+
+
+
+if __name__ == "__main__":
+  parser = OptionParser()
+  parser.add_option("--clf", dest="clf", default='adaboost', type="str", help="clf to study: adaboost,gradboost,xgboost")
+  parser.add_option("--lrate", dest="lrate", default=0.01, type="float", help="learning rate")
+  parser.add_option("--ntree", dest="ntree", default=10, type="int", help="number of estimators")
+  parser.add_option("--depth", dest="depth", default=3, type="int", help="max level per tree")
+  parser.add_option("--samplefrac", dest="samplefrac", default=0.8, type="float", help="fraction of evts")
+  parser.add_option("--varsfrac", dest="varsfrac", default=1.0, type="float", help="fraction of varss")
+  parser.add_option("--rgamma", dest="rgamma", default=0, type="float", help="fraction of evts")
+
+  (options, args) = parser.parse_args()
+
+  #read var
+  used_columns = """Bprob,BLxy,BeLxy,l1pt,l2pt,kpt,Bcos,Bpt,Beta,l1seed""".split(",")
+  used_columns = [c.strip() for c in used_columns]
+  # data load train_sig.root train_bkg.root
+  signal= root_numpy.root2array('train_sig.root', treename='mytree',branches=used_columns)
+  backgr= root_numpy.root2array('train_bkg.root', treename='mytree',branches=used_columns)
+  signal=root_numpy.rec2array(signal)
+  backgr=root_numpy.rec2array(backgr)
+  X=np.concatenate((signal,backgr))
+  Y=np.concatenate(([1 for i in range(len(signal))],[0 for i in range(len(backgr))]))
+  X_train,X_test,Y_train,Y_test= train_test_split(X,Y,test_size=0.05,random_state=42)
+
+  print 'train',options.clf,' on', used_columns,' hparam lrate',options.lrate,' nestimators ',options.ntree,' depth ',options.depth
+  print "\n"
+  if str(options.clf) != 'adaboost' and str(options.clf) != 'xgboost' and  str(options.clf) != 'gradboost':
+      print 'uknown clf terminating'
+      sys.exit()
+ 
+  trainAdaBoost(X_train,X_test,Y_train,Y_test,options.clf,depth=options.depth,lrate=options.lrate,nestimators=options.ntree,samplefraction=options.samplefrac,ncollumns=options.varsfrac,reg_g=options.rgamma)
+ 
+    
